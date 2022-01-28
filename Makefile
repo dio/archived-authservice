@@ -1,63 +1,180 @@
-.PHONY: all docs compose docker docker-from-scratch docker-compile-env build run test coverage format clean
-.DEFAULT_GOAL:=all
-SRCS=$(shell find . -name '*.cc')
-HDRS=$(shell find . -name '*.h')
-TARGET:=//src/main:auth_server
-BAZEL_FLAGS:=$(BAZEL_FLAGS)
-IMAGE?=authservice:$(USER)
+# Copyright Istio Authors
+# Licensed under the Apache License, Version 2.0 (the "License")
 
-all: build test docs
+.PHONY: dist
 
-docs:
-	# If the protodoc command is not found, you can install it with: go get -v -u go.etcd.io/protodoc
-	protodoc --directories=config=message --title="Configuration Options" --output="docs/README.md"
-	grep -v '(validate.required)' docs/README.md > /tmp/README.md && mv /tmp/README.md docs/README.md
+# Include versions of tools we build or fetch on-demand.
+include Tools.mk
 
-compose:
-	openssl req -out run/envoy/tls.crt -new -keyout run/envoy/tls.pem -newkey rsa:2048 -batch -nodes -verbose -x509 -subj "/CN=localhost" -days 365
-	chmod a+rw run/envoy/tls.crt run/envoy/tls.pem
-	docker-compose up --build
+name := auth_server
 
-docker: build
-	rm -rf build_release && mkdir -p build_release && cp -r bazel-bin/ build_release && docker build . -f build/Dockerfile.runner -t $(IMAGE)
+# Root dir returns absolute path of current directory. It has a trailing "/".
+root_dir := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 
-docker.push: docker
-  docker push $(IMAGE)
+# Currently we resolve it using which. But more sophisticated approach is to use infer GOROOT.
+go     := $(shell which go)
+goarch := $(shell $(go) env GOARCH)
+goos   := $(shell $(go) env GOOS)
 
-docker-from-scratch:
-	docker build -f build/Dockerfile.builder -t authservice:$(USER) .
+VERSION ?= dev
 
-docker-compile-env:
-	docker build -f build/Dockerfile.interactive-compile-environment -t authservice-build-env:$(USER) .
+current_binary_path := build/$(name)_$(goos)_$(goarch)
+current_binary      := $(current_binary_path)/$(name)
 
-bazel-bin/src/main/auth_server:
-    # Note: add --compilation_mode=dbg to the end of the next line to build a debug executable with `make docker-from-scratch`
-	bazel build $(BAZEL_FLAGS) //src/main:auth_server
+archives := dist/$(name)_$(VERSION)_$(goos)_$(goarch).tar.gz
 
-build:
-	bazel build $(BAZEL_FLAGS) //src/...
+# Local cache directory.
+CACHE_DIR ?= $(root_dir).cache
 
-run:
-	bazel run $(BAZEL_FLAGS) $(TARGET)
+# Go tools directory holds the binaries of Go-based tools.
+go_tools_dir          := $(CACHE_DIR)/tools/go
+prepackaged_tools_dir := $(CACHE_DIR)/tools/prepackaged
+bazel_cache_dir       := $(CACHE_DIR)/bazel
+clang_version         := $(subst github.com/llvm/llvm-project/llvmorg/clang+llvm@,,$(clang@v))
 
-test:
-	bazel test $(BAZEL_FLAGS) --strategy=TestRunner=standalone --test_output=all --cache_test_results=no //test/...
+main_cc_sources    := $(wildcard src/*/*.cc src/*/*.h src/*/*/*.cc src/*/*/*.h)
+main_build_sources := $(wildcard src/*/BUILD src/*/*/BUILD)
+main_sources       := $(main_cc_sources) $(main_build_sources)
 
-# Only run tests whose name matches a filter
+testable_cc_sources    := $(wildcard test/*/*.cc test/*/*.h test/*/*/*.cc test/*/*/*.h)
+testable_build_sources := $(wildcard test/*/BUILD test/*/*/BUILD)
+testable_sources       := $(testable_cc_sources) $(testable_build_sources)
+
+export PATH            := $(go_tools_dir):$(prepackaged_tools_dir)/bin:$(PATH)
+export LLVM_PREFIX     := $(prepackaged_tools_dir)
+export RT_LIBRARY_PATH := $(prepackaged_tools_dir)/lib/clang/$(clang_version)/lib/$(goos)
+export BAZELISK_HOME   := $(CACHE_DIR)/tools/bazelisk
+export CGO_ENABLED     := 0
+
+# Always build with libc++, but make it overrideable.
+export BAZEL_FLAGS ?= --config=libc++
+
+# Always use amd64 for bazelisk for build and test rules below, since we don't support for macOS
+# arm64 yet (especially the protoc-gen-validate project).
+bazel        := GOARCH=amd64 $(go) run $(bazelisk@v) --output_user_root=$(bazel_cache_dir)
+buildifier   := $(go_tools_dir)/buildifier
+envsubst     := $(go_tools_dir)/envsubst
+clang        := $(prepackaged_tools_dir)/bin/clang
+clang-format := $(prepackaged_tools_dir)/bin/clang-format
+llvm-config  := $(prepackaged_tools_dir)/bin/llvm-config
+
+# This is adopted from https://github.com/tetratelabs/func-e/blob/3df66c9593e827d67b330b7355d577f91cdcb722/Makefile#L60-L76.
+# ANSI escape codes. f_ means foreground, b_ background.
+# See https://en.wikipedia.org/wiki/ANSI_escape_code#SGR_(Select_Graphic_Rendition)_parameters.
+f_black            := $(shell printf "\33[30m")
+b_black            := $(shell printf "\33[40m")
+f_white            := $(shell printf "\33[97m")
+f_gray             := $(shell printf "\33[37m")
+f_dark_gray        := $(shell printf "\33[90m")
+f_bright_cyan      := $(shell printf "\33[96m")
+b_bright_cyan      := $(shell printf "\33[106m")
+ansi_reset         := $(shell printf "\33[0m")
+ansi_$(name)       := $(b_black)$(f_black)$(b_bright_cyan)$(name)$(ansi_reset)
+ansi_format_dark   := $(f_gray)$(f_bright_cyan)%-10s$(ansi_reset) $(f_dark_gray)%s$(ansi_reset)\n
+ansi_format_bright := $(f_white)$(f_bright_cyan)%-10s$(ansi_reset) $(f_black)$(b_bright_cyan)%s$(ansi_reset)\n
+
+help: ## Describe how to use each target
+	@printf "$(ansi_$(name))$(f_white)\n"
+	@awk 'BEGIN {FS = ":.*?## "} /^[0-9a-zA-Z_-]+:.*?## / {sub("\\\\n",sprintf("\n%22c"," "), $$2);printf "$(ansi_format_dark)", $$1, $$2}' $(MAKEFILE_LIST)
+
+build: $(current_binary) ## Build the authservice binary
+
+release: $(current_binary).stripped ## Build the authservice release binary
+
+TEST_FLAGS ?= --strategy=TestRunner=standalone --test_output=all --cache_test_results=no
+test: clang.bazelrc $(main_sources) $(testable_sources) ## Run tests
+	$(call bazel-test)
+
+# Run tests with a filter.
 # Usage examples:
-#   make filter-test FILTER=*RetrieveToken*
-#   make filter-test FILTER=OidcFilterTest.*
-filter-test:
-	bazel test $(BAZEL_FLAGS) --strategy=TestRunner=standalone --test_output=all --cache_test_results=no //test/... --test_arg='--gtest_filter=$(FILTER)'
+#   make test-filter FILTER=*RetrieveToken*
+#   make test-filter FILTER=OidcFilterTest.*
+FILTER ?= *RetrieveToken*
+testfilter: clang.bazelrc $(main_sources) $(testable_sources) ## Run tests with filter FILTER.
+	$(call bazel-test,--test_arg='--gtest_filter=$(FILTER)')
 
-coverage:
-	bazel coverage $(BAZEL_FLAGS) --instrumentation_filter=//src/ //...
+format: $(buildifier) $(clang-format) ## Format files.
+	@$(buildifier) --lint=fix -r bazel src test
+	@$(buildifier) --lint=fix WORKSPACE BUILD.bazel
+	@$(clang-format) -i $(main_cc_sources) $(testable_cc_sources)
 
-format:
-	clang-format -i $(SRCS) $(HDRS)
+dist: $(archives) ## Generate release assets
 
-clean:
-	bazel clean --expunge --async
+PLATFORM ?= "linux/amd64,linux/arm/v7,linux/arm64"
+HUB ?= ghcr.io/istio-ecosystem/authservice
+# TODO(dio): Build with multiarch support.
+docker:
+ifeq ($(goos),linux)
+	$(MAKE) dist/$(name)_linux_amd64/$(name).stripped
+	@docker build --build-arg NAME=$(name) --tag $(HUB)/$(name):$(VERSION) .
+else
+# TODO(dio): Build the release binary in a docker container.
+	@echo "building docker image currently is only supported on Linux."
+endif
 
-dep-graph.dot:
-	bazel query $(BAZEL_FLAGS) --nohost_deps --noimplicit_deps "deps($(TARGET))" --output graph > $@
+# By default, run the build rule with "fastbuild" compilation mode. "fastbuild" means build as fast
+# as possible: generate minimal debugging information (-gmlt -Wl,-S), and don't optimize.
+# This is the default. Note: -DNDEBUG will not be set.
+#
+# Reference: https://docs.bazel.build/versions/main/user-manual.html#flag--compilation_mode.
+build/$(name)_$(goos)_$(goarch)/$(name): clang.bazelrc $(main_sources)
+	@$(call bazel-build,$@)
+
+# Stripped binary is compiled using "--compilation_mode opt". "opt" means build with optimization
+# enabled and with assert() calls disabled (-O2 -DNDEBUG). Debugging information will not be
+# generated in opt mode unless you also pass --copt -g.
+#
+# Reference: https://docs.bazel.build/versions/main/user-manual.html#flag--compilation_mode.
+build/$(name)_$(goos)_$(goarch)/$(name).stripped: clang.bazelrc $(main_sources)
+	@$(call bazel-build,$@,--compilation_mode opt)
+
+dist/$(name)_$(VERSION)_$(goos)_$(goarch).tar.gz: build/$(name)_$(goos)_$(goarch)/$(name).stripped
+	@mkdir -p $(@D)
+	@tar -C $(<D) -cpzf $@ $(<F)
+
+clang.bazelrc: bazel/clang.bazelrc.tmpl $(llvm-config) $(envsubst)
+	@$(envsubst) < $< > $@
+
+bazelclean: ## Clean up the bazel caches
+	@$(bazel) clean --expunge --async
+
+clean: ## Clean the dist directory
+	@rm -fr dist build
+
+$(llvm-config): $(clang)
+
+# Catch all rules for Go-based tools.
+$(go_tools_dir)/%:
+	@GOBIN=$(go_tools_dir) go install $($(notdir $@)@v)
+
+define bazel-build
+	$(call bazel-dirs)
+	$(bazel) build $(BAZEL_FLAGS) $2 //src/main:$(notdir $1)
+	mkdir -p $(dir $1) && cp -f bazel-bin/src/main/$(notdir $1) $1
+endef
+define bazel-test
+	$(call bazel-dirs)
+	$(bazel) test $(BAZEL_FLAGS) $(TEST_FLAGS) //test/... $1
+endef
+define bazel-dirs
+	mkdir -p $(BAZELISK_HOME)
+	mkdir -p $(bazel_cache_dir)
+endef
+
+# Install clang from https://github.com/llvm/llvm-project. We don't support win32 yet as this script
+# will fail.
+clang-os                          = $(if $(findstring $(goos),darwin),apple-darwin,linux-gnu-ubuntu-20.04)
+clang-download-archive-url-prefix = https://$(subst llvmorg/clang+llvm@,releases/download/llvmorg-,$($(notdir $1)@v))
+$(clang):
+	@mkdir -p $(dir $@)
+	@curl -SL $(call clang-download-archive-url-prefix,$@)/clang+llvm-$(clang_version)-x86_64-$(call clang-os).tar.xz | \
+		tar xJf - -C $(prepackaged_tools_dir) --strip-components 1
+
+# Install clang-format from https://github.com/angular/clang-format. We don't support win32 yet as
+# this script will fail.
+clang-format-download-archive-url = https://$(subst @,/archive/refs/tags/,$($(notdir $1)@v)).tar.gz
+clang-format-dir                  = $(subst github.com/angular/clang-format@v,clang-format-,$($(notdir $1)@v))
+$(clang-format):
+	@mkdir -p $(dir $@)
+	@curl -SL $(call clang-format-download-archive-url,$@) | tar xzf - -C $(prepackaged_tools_dir)/bin \
+		--strip 3 $(call clang-format-dir,$@)/bin/$(goos)_x64

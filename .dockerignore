@@ -12,3 +12,4 @@
 !WORKSPACE
 !BUILD
 !.bazelrc
+!build
