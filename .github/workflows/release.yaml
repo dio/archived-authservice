@@ -10,7 +10,7 @@ defaults:
     shell: bash
 
 jobs:
-  make-dist:
+  dist:
     name: "Make artifacts"
     outputs: # allows to refer it as ${{ needs.build.outputs.version }} in subsequent jobs.
       version: ${{ steps.describe.outputs.version }}
@@ -56,7 +56,15 @@ jobs:
           path: ./.cache/tools
           key: ${{ runner.os }}-tools-${{ hashFiles('Tools.mk') }}
 
-      - name: Run tests
+      - name: Install Ubuntu prerequisites
+        run: sudo apt-get update && sudo apt-get -y install make cmake ninja-build build-essential
+        if: runner.os == 'Linux'
+
+      - name: Install macOS prerequisites
+        run: brew install cmake ninja coreutils
+        if: runner.os == 'macOS'
+
+      - name: Run all tests
         run: make test
 
       - name: Create artifacts
@@ -71,6 +79,7 @@ jobs:
   release:
     name: release
     runs-on: ubuntu-20.04
+    needs: dist
     timeout-minutes: 90 # instead of 360 by default.
     steps:
       - name: Cancel when duplicated
