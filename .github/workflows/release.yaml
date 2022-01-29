@@ -60,8 +60,7 @@ jobs:
         run: make test
 
       - name: Create artifacts
-        run: ${GITHUB_REF#refs/tags/v} make dist
-        env:
+        run: VERSION=${GITHUB_REF#refs/tags/v} make dist
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v2
