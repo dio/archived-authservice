@@ -94,5 +94,5 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           files: |
-            build-Linux/**/*.tar.gz
-            build-macOS/**/*.tar.gz
+            dist-Linux/**/*.tar.gz
+            dist-macOS/**/*.tar.gz
