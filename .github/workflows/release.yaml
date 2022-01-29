@@ -1,27 +1,17 @@
-name: "commit"
+name: "release"
 
 on:
   push:
-    branches:
-      - master
-    paths-ignore:
-      - "**/*.md"
-  pull_request:
-    branches:
-      - master
-    paths-ignore:
-      - "**/*.md"
-
-  # Allows triggering the workflow manually in github actions page.
-  workflow_dispatch:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+**"  # For example: v0.2.0 v0.2.1-rc2
 
 defaults:
   run: # use bash for all operating systems unless overridden.
     shell: bash
 
 jobs:
-  test:
-    name: test
+  make-dist:
+    name: "Make artifacts"
     outputs: # allows to refer it as ${{ needs.build.outputs.version }} in subsequent jobs.
       version: ${{ steps.describe.outputs.version }}
     runs-on: ${{ matrix.os }}
@@ -66,16 +56,35 @@ jobs:
           path: ./.cache/tools
           key: ${{ runner.os }}-tools-${{ hashFiles('Tools.mk') }}
 
-      - name: Install Ubuntu prerequisites
-        run: sudo apt-get update && sudo apt-get -y install make cmake ninja-build build-essential
-        if: runner.os == 'Linux'
-
-      - name: Install macOS prerequisites
-        run: brew install cmake ninja coreutils
-        if: runner.os == 'macOS'
-
-      - name: Rull all tests
+      - name: Run tests
         run: make test
 
-      - name: Build current binary
-        run: make build
+      - name: Create artifacts
+        run: ${GITHUB_REF#refs/tags/v} make dist
+        env:
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v2
+        with:
+          name: dist-${{ runner.os }}
+          path: dist
+
+  release:
+    name: release
+    runs-on: ubuntu-20.04
+    timeout-minutes: 90 # instead of 360 by default.
+    steps:
+      - name: Cancel when duplicated
+        uses: styfle/cancel-workflow-action@0.4.1
+        with:
+          access_token: ${{ github.token }}
+
+      - name: Download artifacts # get all of the uploaded artifacts
+        uses: actions/download-artifact@v2
+
+      - name: Release downloaded artifacts
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            build-Linux/**/*.tar.gz
+            build-macOS/**/*.tar.gz
