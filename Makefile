@@ -40,6 +40,8 @@ testable_cc_sources    := $(wildcard test/*/*.cc test/*/*.h test/*/*/*.cc test/*
 testable_build_sources := $(wildcard test/*/BUILD test/*/*/BUILD)
 testable_sources       := $(testable_cc_sources) $(testable_build_sources)
 
+protos := $(wildcard config/*.proto config/*/*.proto config/*/*/*.proto)
+
 export PATH            := $(go_tools_dir):$(prepackaged_tools_dir)/bin:$(PATH)
 export LLVM_PREFIX     := $(prepackaged_tools_dir)
 export RT_LIBRARY_PATH := $(prepackaged_tools_dir)/lib/clang/$(clang_version)/lib/$(goos)
@@ -97,7 +99,7 @@ testfilter: clang.bazelrc $(main_sources) $(testable_sources) ## Run tests with 
 format: $(buildifier) $(clang-format) ## Format files.
 	@$(buildifier) --lint=fix -r bazel src test
 	@$(buildifier) --lint=fix WORKSPACE BUILD.bazel
-	@$(clang-format) -i $(main_cc_sources) $(testable_cc_sources)
+	@$(clang-format) -i $(main_cc_sources) $(testable_cc_sources) $(protos)
 
 dist: $(archives) ## Generate release assets
 
@@ -141,8 +143,11 @@ bazelclean: ## Clean up the bazel caches
 clean: ## Clean the dist directory
 	@rm -fr dist build
 
-modupdate: $(buf) ## To update buf.lock file.
+modupdate: $(buf) ## Update buf.lock file
 	@$(buf) mod update
+
+modlint: $(buf) ## Lint all **/*.proto
+	@$(buf) lint
 
 $(llvm-config): $(clang)
 

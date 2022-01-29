@@ -64,6 +64,9 @@ jobs:
         run: brew install cmake ninja coreutils
         if: runner.os == 'macOS'
 
+      - name: Lint all protos
+        run: make modlint
+
       - name: Run all tests
         run: make test
 

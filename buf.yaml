@@ -1,6 +1,10 @@
 version: v1
 name: buf.build/dio/authservice
 
+build:
+  excludes:
+    - .cache
+
 lint:
   allow_comment_ignores: true
   use:
