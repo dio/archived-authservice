@@ -1,0 +1,13 @@
+version: v1
+name: buf.build/dio/authservice
+
+lint:
+  allow_comment_ignores: true
+  use:
+    - BASIC
+  except:
+    - FIELD_LOWER_SNAKE_CASE
+    - PACKAGE_DIRECTORY_MATCH
+
+deps:
+  - buf.build/envoyproxy/protoc-gen-validate

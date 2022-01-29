@@ -52,6 +52,7 @@ export BAZEL_FLAGS ?= --config=libc++
 # Always use amd64 for bazelisk for build and test rules below, since we don't support for macOS
 # arm64 yet (especially the protoc-gen-validate project).
 bazel        := GOARCH=amd64 $(go) run $(bazelisk@v) --output_user_root=$(bazel_cache_dir)
+buf          := $(go_tools_dir)/buf
 buildifier   := $(go_tools_dir)/buildifier
 envsubst     := $(go_tools_dir)/envsubst
 clang        := $(prepackaged_tools_dir)/bin/clang
@@ -100,8 +101,7 @@ format: $(buildifier) $(clang-format) ## Format files.
 
 dist: $(archives) ## Generate release assets
 
-PLATFORM ?= "linux/amd64,linux/arm/v7,linux/arm64"
-HUB ?= ghcr.io/istio-ecosystem/authservice
+HUB ?= ghcr.io/dio/authservice
 # TODO(dio): Build with multiarch support.
 docker:
 ifeq ($(goos),linux)
@@ -140,6 +140,9 @@ bazelclean: ## Clean up the bazel caches
 
 clean: ## Clean the dist directory
 	@rm -fr dist build
+
+modupdate: $(buf) ## To update buf.lock file.
+	@$(buf) mod update
 
 $(llvm-config): $(clang)
 

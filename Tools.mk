@@ -2,6 +2,7 @@
 # Licensed under the Apache License, Version 2.0 (the "License")
 
 # List of required tools.
+buf@v          := github.com/bufbuild/buf/cmd/buf@v1.0.0-rc6
 bazelisk@v     := github.com/bazelbuild/bazelisk@v1.11.0
 buildifier@v   := github.com/bazelbuild/buildtools/buildifier@4.2.5
 clang@v        := github.com/llvm/llvm-project/llvmorg/clang+llvm@12.0.0
